@@ -97,12 +97,14 @@ else
 fi
 
 # CHECK 8: POST /api/feedback with <script> -> 403 (WAF blocked)
-WAF_BLOCK_STATUS=$(curl -sf -o /dev/null \
+# Use -s only (no -f) so curl does not treat 4xx as failure; capture only
+# the status code via -w so we always get the real HTTP status.
+WAF_BLOCK_STATUS=$(curl -s -o /dev/null \
   -w '%{http_code}' \
   -X POST "${BASE_URL}/api/feedback" \
   -H 'Content-Type: application/json' \
-  -d '{"message":"<script>alert(1)</script>"}' 2>/dev/null || echo "000")
-if [[ "$WAF_BLOCK_STATUS" == "403" ]]; then
+  -d '{"message":"<script>alert(1)</script>"}')
+if [ "$WAF_BLOCK_STATUS" = "403" ]; then
   check_pass "CHECK 8: POST /api/feedback with <script> blocked by WAF (403)"
 else
   check_fail "CHECK 8: WAF should block <script> with 403 (got ${WAF_BLOCK_STATUS})"
@@ -120,12 +122,16 @@ else
   check_fail "CHECK 9: SVG WAF bypass should return 200 (got ${WAF_BYPASS_STATUS})"
 fi
 
-# CHECK 10: App port not directly published on host
-APP_PORT_CHECK=$(docker compose port app 3075 2>/dev/null || docker compose port app 3000 2>/dev/null || echo "not_published")
-if [[ "$APP_PORT_CHECK" == "not_published" || -z "$APP_PORT_CHECK" ]]; then
-  check_pass "CHECK 10: App port not directly published to host"
+# CHECK 10: App port not directly published on host.
+# `docker compose port` exits 0 and prints "HOST:PORT" when published,
+# or exits non-zero (or prints nothing) when the port is only exposed
+# internally via `expose:` (no `ports:` mapping).
+# We capture stdout; a non-empty result means the port IS published.
+published=$(docker compose port app 3075 2>/dev/null || true)
+if [ -z "$published" ]; then
+  check_pass "CHECK 10: App port is not directly published to host"
 else
-  check_fail "CHECK 10: App port appears to be directly published: ${APP_PORT_CHECK}"
+  check_fail "CHECK 10: App port appears to be directly published: ${published}"
 fi
 
 # CHECK 11: No service uses host networking
