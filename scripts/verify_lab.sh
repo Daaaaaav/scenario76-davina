@@ -1,104 +1,195 @@
 #!/usr/bin/env bash
 # =============================================================================
-# verify_lab.sh — Lab verification script
-# Checks that all required services and endpoints are functional.
-# Outputs [PASS] or [FAIL] for each check.
-# Exits with non-zero code if any required check fails.
+# verify_lab.sh — Scenario75 Cyber Range lab verification
+# Tests all required security behaviors.
 # =============================================================================
+set -uo pipefail
 
-set -euo pipefail
+BASE_URL="${BASE_URL:-http://127.0.0.1:3075}"
+PASS_COUNT=0
+FAIL_COUNT=0
+TOTAL=14
 
-BASE_URL="http://127.0.0.1:3075"
-FAIL=0
+# Temp cookie jar
+COOKIE_JAR=$(mktemp /tmp/ctf_cookies_XXXXXX)
+trap 'rm -f "$COOKIE_JAR"' EXIT
 
-check() {
-  local desc="$1"
-  local result="$2"
-  if [[ "$result" == "pass" ]]; then
-    echo "[PASS] $desc"
-  else
-    echo "[FAIL] $desc"
-    FAIL=1
-  fi
-}
+check_pass() { echo "[PASS] $1"; PASS_COUNT=$((PASS_COUNT+1)); }
+check_fail() { echo "[FAIL] $1"; FAIL_COUNT=$((FAIL_COUNT+1)); }
 
-# --- Infrastructure checks ---
-if command -v docker &>/dev/null; then
-  check "Docker is available" pass
-else
-  check "Docker is available" fail
+# Check server reachability first
+if ! curl -sf "${BASE_URL}/" -o /dev/null 2>/dev/null; then
+  echo "ERROR: Cannot reach ${BASE_URL} — is the Docker Compose stack running?"
+  echo "Run: docker compose up -d"
+  exit 1
 fi
 
-if docker compose version &>/dev/null 2>&1 || command -v docker-compose &>/dev/null; then
-  check "Docker Compose is available" pass
-else
-  check "Docker Compose is available" fail
-fi
-
-# Check containers running (if compose stack is up)
-if docker compose ps 2>/dev/null | grep -q "Up\|running" || docker-compose ps 2>/dev/null | grep -q "Up\|running"; then
-  check "Docker Compose stack is running" pass
-else
-  check "Docker Compose stack is running" fail
-fi
-
-# --- Endpoint checks ---
-http_check() {
-  local desc="$1"
-  local method="$2"
-  local url="$3"
-  local data="${4:-}"
-  local expected_status="${5:-200}"
-
-  if [[ "$method" == "POST" && -n "$data" ]]; then
-    status=$(curl -sf -o /dev/null -w "%{http_code}" -X POST \
-      -H "Content-Type: application/json" \
-      -d "$data" "$url" 2>/dev/null || echo "000")
-  else
-    status=$(curl -sf -o /dev/null -w "%{http_code}" "$url" 2>/dev/null || echo "000")
-  fi
-
-  if [[ "$status" == "$expected_status" ]]; then
-    check "$desc" pass
-  else
-    check "$desc (got HTTP $status)" fail
-  fi
-}
-
-if curl -sf "$BASE_URL" -o /dev/null 2>/dev/null; then
-  check "localhost:3075 is reachable" pass
-else
-  check "localhost:3075 is reachable" fail
-fi
-
-http_check "GET / returns 200"            GET  "$BASE_URL/"
-http_check "GET /robots.txt returns 200"  GET  "$BASE_URL/robots.txt"
-http_check "GET /dashboard returns 200"   GET  "$BASE_URL/dashboard"
-http_check "POST /api/feedback returns 200" POST "$BASE_URL/api/feedback" '{"message":"verify"}' 200
-http_check "POST /api/verify-mfa returns 200" POST "$BASE_URL/api/verify-mfa" '{}' 200
-
-# Verify app port NOT published to host directly
-# (docker-compose should only publish nginx:80 as 127.0.0.1:3075, not app:3075)
+echo "=== Scenario75 Cyber Range — Lab Verification ==="
+echo "Base URL: ${BASE_URL}"
 echo ""
-echo "--- Security checks ---"
-if docker compose ps 2>/dev/null | grep -q "3075->3075" || docker-compose ps 2>/dev/null | grep -q "3075->3075"; then
-  check "App port NOT directly published to host" fail
+
+# CHECK 1: GET /dashboard without auth -> 401 or 403
+STATUS=$(curl -s -o /dev/null -w '%{http_code}' "${BASE_URL}/dashboard")
+if [[ "$STATUS" == "401" || "$STATUS" == "403" ]]; then
+  check_pass "CHECK 1: GET /dashboard without auth returns 401/403 (got ${STATUS})"
 else
-  check "App port NOT directly published to host" pass
+  check_fail "CHECK 1: GET /dashboard without auth should be 401/403 (got ${STATUS})"
 fi
 
-# Check no host networking mode
-if docker inspect scenario75-cyber-range-app-1 2>/dev/null | grep -q '"NetworkMode": "host"'; then
-  check "No service using host networking" fail
+# CHECK 2: GET /robots.txt -> 200 with both Disallow paths and recon flag
+ROBOTS=$(curl -sf "${BASE_URL}/robots.txt" 2>/dev/null || echo "FAILED")
+if echo "$ROBOTS" | grep -q 'Disallow: /api/verify-mfa' && \
+   echo "$ROBOTS" | grep -q 'Disallow: /dashboard' && \
+   echo "$ROBOTS" | grep -q 'SCENARIO75{R3c0n_F1ag_R0b0ts_D1sc0v3r3d}'; then
+  check_pass "CHECK 2: /robots.txt has both Disallow paths and recon flag"
 else
-  check "No service using host networking" pass
+  check_fail "CHECK 2: /robots.txt missing required content (got: $(echo "$ROBOTS" | head -c 200))"
+fi
+
+# CHECK 3: X-Powered-By header
+XPB=$(curl -sf -I "${BASE_URL}/" 2>/dev/null | grep -i 'x-powered-by' | tr -d '\r' || echo "")
+if echo "$XPB" | grep -q 'SCENARIO75{Node.js}'; then
+  check_pass "CHECK 3: X-Powered-By: SCENARIO75{Node.js}"
+else
+  check_fail "CHECK 3: X-Powered-By header incorrect (got: ${XPB})"
+fi
+
+# CHECK 4: POST /api/login with admin/admin123 -> 200 and sets pre_mfa_session cookie
+LOGIN_STATUS=$(curl -sf -c "$COOKIE_JAR" -o /tmp/ctf_login_resp.json \
+  -w '%{http_code}' \
+  -X POST "${BASE_URL}/api/login" \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"admin123"}' 2>/dev/null || echo "000")
+if [[ "$LOGIN_STATUS" == "200" ]] && grep -q 'pre_mfa_session' "$COOKIE_JAR" 2>/dev/null; then
+  check_pass "CHECK 4: POST /api/login with admin/admin123 returns 200 and sets pre_mfa_session"
+else
+  check_fail "CHECK 4: POST /api/login failed (status=${LOGIN_STATUS}, cookie=$(grep pre_mfa "$COOKIE_JAR" 2>/dev/null || echo none))"
+fi
+
+# CHECK 5: POST /api/verify-mfa with pre_mfa_session -> 200 and sets adm_sess cookie
+MFA_STATUS=$(curl -sf -b "$COOKIE_JAR" -c "$COOKIE_JAR" \
+  -o /tmp/ctf_mfa_resp.json \
+  -w '%{http_code}' \
+  -X POST "${BASE_URL}/api/verify-mfa" \
+  -H 'Content-Type: application/json' \
+  -d '{}' 2>/dev/null || echo "000")
+if [[ "$MFA_STATUS" == "200" ]] && grep -q 'adm_sess' "$COOKIE_JAR" 2>/dev/null; then
+  check_pass "CHECK 5: POST /api/verify-mfa returns 200 and sets adm_sess cookie"
+else
+  check_fail "CHECK 5: POST /api/verify-mfa failed (status=${MFA_STATUS})"
+fi
+
+# CHECK 6: GET /dashboard with valid adm_sess -> 200
+DASH_AUTH_STATUS=$(curl -sf -b "$COOKIE_JAR" -o /tmp/ctf_dash_resp.html \
+  -w '%{http_code}' \
+  "${BASE_URL}/dashboard" 2>/dev/null || echo "000")
+if [[ "$DASH_AUTH_STATUS" == "200" ]]; then
+  check_pass "CHECK 6: GET /dashboard with valid adm_sess returns 200"
+else
+  check_fail "CHECK 6: GET /dashboard with valid adm_sess failed (status=${DASH_AUTH_STATUS})"
+fi
+
+# CHECK 7: Authenticated dashboard contains .xss-payload
+if grep -q 'xss-payload' /tmp/ctf_dash_resp.html 2>/dev/null; then
+  check_pass "CHECK 7: Authenticated dashboard contains .xss-payload class"
+else
+  check_fail "CHECK 7: Authenticated dashboard missing .xss-payload class"
+fi
+
+# CHECK 8: POST /api/feedback with <script> -> 403 (WAF blocked)
+WAF_BLOCK_STATUS=$(curl -sf -o /dev/null \
+  -w '%{http_code}' \
+  -X POST "${BASE_URL}/api/feedback" \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"<script>alert(1)</script>"}' 2>/dev/null || echo "000")
+if [[ "$WAF_BLOCK_STATUS" == "403" ]]; then
+  check_pass "CHECK 8: POST /api/feedback with <script> blocked by WAF (403)"
+else
+  check_fail "CHECK 8: WAF should block <script> with 403 (got ${WAF_BLOCK_STATUS})"
+fi
+
+# CHECK 9: POST /api/feedback with SVG payload -> 200 (WAF bypass allowed)
+WAF_BYPASS_STATUS=$(curl -sf -o /dev/null \
+  -w '%{http_code}' \
+  -X POST "${BASE_URL}/api/feedback" \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"<svg onload=alert(1)>"}' 2>/dev/null || echo "000")
+if [[ "$WAF_BYPASS_STATUS" == "200" ]]; then
+  check_pass "CHECK 9: POST /api/feedback with SVG payload allowed (WAF bypass, 200)"
+else
+  check_fail "CHECK 9: SVG WAF bypass should return 200 (got ${WAF_BYPASS_STATUS})"
+fi
+
+# CHECK 10: App port not directly published on host
+APP_PORT_CHECK=$(docker compose port app 3075 2>/dev/null || docker compose port app 3000 2>/dev/null || echo "not_published")
+if [[ "$APP_PORT_CHECK" == "not_published" || -z "$APP_PORT_CHECK" ]]; then
+  check_pass "CHECK 10: App port not directly published to host"
+else
+  check_fail "CHECK 10: App port appears to be directly published: ${APP_PORT_CHECK}"
+fi
+
+# CHECK 11: No service uses host networking
+if docker compose config 2>/dev/null | grep -q 'network_mode.*host'; then
+  check_fail "CHECK 11: A service is using host networking mode"
+else
+  check_pass "CHECK 11: No service uses host networking"
+fi
+
+# CHECK 12: generate_logs.sh produces required log files
+bash "$(dirname "$0")/generate_logs.sh" > /dev/null 2>&1 || true
+LOG_DIR=""
+if [ -f /opt/admin/logs/access.log ]; then
+  LOG_DIR="/opt/admin/logs"
+elif [ -f "$(dirname "$0")/../logs/access.log" ]; then
+  LOG_DIR="$(dirname "$0")/../logs"
+fi
+
+if [ -n "$LOG_DIR" ] && \
+   grep -q '18:50:15' "${LOG_DIR}/access.log" 2>/dev/null && \
+   grep -q '18:51:55' "${LOG_DIR}/access.log" 2>/dev/null && \
+   grep -q '18:53:10' "${LOG_DIR}/access.log" 2>/dev/null && \
+   grep -q 'CRITICAL' "${LOG_DIR}/error.log" 2>/dev/null && \
+   grep -q 'UEhBTlRPTUdSSUR7QkxVRV9MMGdfSHVudDNyX000c3Qzcn0=' "${LOG_DIR}/access.log" 2>/dev/null; then
+  check_pass "CHECK 12: generate_logs.sh produces required log files and events"
+else
+  check_fail "CHECK 12: Log files missing or incomplete (LOG_DIR=${LOG_DIR:-not found})"
+fi
+
+# CHECK 13: POST /api/feedback basic functionality
+FEEDBACK_STATUS=$(curl -sf -o /dev/null \
+  -w '%{http_code}' \
+  -X POST "${BASE_URL}/api/feedback" \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"verify lab test"}' 2>/dev/null || echo "000")
+if [[ "$FEEDBACK_STATUS" == "200" ]]; then
+  check_pass "CHECK 13: POST /api/feedback with valid body returns 200"
+else
+  check_fail "CHECK 13: POST /api/feedback failed (got ${FEEDBACK_STATUS})"
+fi
+
+# CHECK 14: GET /health -> 200
+HEALTH_STATUS=$(curl -sf -o /dev/null \
+  -w '%{http_code}' \
+  "${BASE_URL}/api/health" 2>/dev/null || echo "000")
+# Also try /health (the route is at /health not /api/health)
+if [[ "$HEALTH_STATUS" != "200" ]]; then
+  HEALTH_STATUS=$(curl -sf -o /dev/null -w '%{http_code}' "${BASE_URL}/health" 2>/dev/null || echo "000")
+fi
+if [[ "$HEALTH_STATUS" == "200" ]]; then
+  check_pass "CHECK 14: GET /health returns 200"
+else
+  check_fail "CHECK 14: GET /health failed (got ${HEALTH_STATUS})"
 fi
 
 echo ""
-if [[ $FAIL -eq 0 ]]; then
+echo "================================================"
+echo "PASSED: ${PASS_COUNT}/${TOTAL}"
+echo "FAILED: ${FAIL_COUNT}/${TOTAL}"
+echo "================================================"
+
+if [[ $FAIL_COUNT -eq 0 ]]; then
   echo "All checks passed."
   exit 0
 else
-  echo "One or more checks failed. Review output above."
   exit 1
 fi

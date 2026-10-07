@@ -3,34 +3,65 @@
 const logger = require('../utils/logger');
 
 /**
- * WAF (Web Application Firewall) middleware.
+ * WAF middleware — intentionally weak filtering for CTF training.
  *
- * SCAFFOLDING STAGE: This is a SAFE placeholder only.
- * It inspects request bodies and logs that inspection occurred,
- * but does not block, modify, or exploit any input.
+ * BLOCKS: basic <script> tags (HTTP 403) — detectable baseline
+ * ALLOWS: HTML5/SVG event-handler payloads (e.g. <svg onload=...>) — intended WAF bypass
+ * BLOCKS: direct document.cookie access — exact string only
+ * ALLOWS: split-string cookie access (e.g. "cook"+"ie") — intended training bypass
  *
- * TODO (CTF IMPLEMENTATION STAGE — isolated cyber-range only):
- *   TODO-WAF-1: Block a basic <script> payload with HTTP 403 to establish
- *               a detectable baseline that defenders can observe in logs.
- *   TODO-WAF-2: Intentionally demonstrate an HTML5/SVG WAF bypass inside
- *               the isolated CTF to show how naive keyword filtering fails
- *               (e.g. <svg onload=...>, <img src=x onerror=...>).
- *   TODO-WAF-3: Demonstrate weak keyword filtering — the filter catches
- *               '<script>' but misses obfuscated variants, teaching
- *               defenders that signature-only WAFs are insufficient.
- *   TODO-WAF-4: Provide a controlled test case for the vulnerability so
- *               Blue Team students can observe WAF evasion in telemetry.
- *
- * These TODO items MUST remain unimplemented until the application is
- * deployed inside an isolated cyber-range VM with no external connectivity.
+ * This intentional weakness is part of the CTF scenario: students learn
+ * that signature-only WAFs are insufficient.
  */
 function waf(req, res, next) {
-  // Log that WAF inspection is occurring (safe, no side-effects)
-  if (req.body !== undefined) {
-    logger.debug(`WAF: inspected request body for ${req.method} ${req.url}`);
+  // Collect strings to check: body fields, query params, User-Agent
+  const toCheck = [];
+
+  if (req.body) {
+    if (typeof req.body === 'object') {
+      Object.values(req.body).forEach(v => {
+        if (typeof v === 'string') { toCheck.push(v); }
+      });
+    } else if (typeof req.body === 'string') {
+      toCheck.push(req.body);
+    }
   }
 
-  // SCAFFOLDING: pass all requests through without modification
+  // Check query params
+  if (req.query) {
+    Object.values(req.query).forEach(v => {
+      if (typeof v === 'string') { toCheck.push(v); }
+    });
+  }
+
+  // Check User-Agent
+  const ua = req.headers['user-agent'];
+  if (ua) { toCheck.push(ua); }
+
+  for (const value of toCheck) {
+    // Block basic <script> tags (case-insensitive)
+    if (/<script[\s>]/i.test(value) || /<\/script>/i.test(value)) {
+      logger.warn(`WAF: blocked script tag from ${req.ip} on ${req.url}`);
+      return res.status(403).json({
+        error: 'WAF: Blocked',
+        reason: 'Malicious script tag detected',
+      });
+    }
+
+    // Block direct document.cookie access (exact pattern)
+    // Allow split-string patterns like "cook"+"ie" or document["coo"+"kie"]
+    if (/document\.cookie(?!["'\]])/.test(value)) {
+      logger.warn(`WAF: blocked document.cookie access from ${req.ip} on ${req.url}`);
+      return res.status(403).json({
+        error: 'WAF: Blocked',
+        reason: 'Direct cookie access attempt detected',
+      });
+    }
+
+    // SVG/HTML5 event-handler payloads are intentionally allowed (WAF bypass training)
+    // <svg onload=...>, <img onerror=...>, etc. pass through
+  }
+
   next();
 }
 

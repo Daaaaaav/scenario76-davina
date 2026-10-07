@@ -9,12 +9,19 @@ const routes = require('./routes');
 
 const app = express();
 
-// Middleware
+// Disable default Express X-Powered-By header
+app.disable('x-powered-by');
+
+// Middleware — order matters: body parsers must come before WAF so req.body is populated
 app.use(requestLogger);
-app.use(waf);
-app.use(cookieParser());
+app.use((req, res, next) => {
+  res.setHeader('X-Powered-By', 'SCENARIO75{Node.js}');
+  next();
+});
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
+app.use(cookieParser());
+app.use(waf);
 
 // Routes
 app.use('/', routes);
