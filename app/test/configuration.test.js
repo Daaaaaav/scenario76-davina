@@ -40,14 +40,15 @@ test('PORT defaults to 3075', (_t) => {
   assert.equal(config.PORT, 3075);
 });
 
-test('HOST validation rejects 0.0.0.0', (_t) => {
+test('HOST validation rejects 0.0.0.0 outside a container', (_t) => {
   process.env.HOST = '0.0.0.0';
+  delete process.env.IN_CONTAINER; // ensure we are NOT in container mode
   Object.keys(require.cache).forEach((key) => {
     if (key.includes('config')) { delete require.cache[key]; }
   });
   assert.throws(
     () => require('../src/config'),
-    /0\.0\.0\.0 is not permitted/
+    /IN_CONTAINER=true/  // new message: only permitted when IN_CONTAINER=true
   );
   delete process.env.HOST;
 });

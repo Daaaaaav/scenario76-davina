@@ -7,12 +7,17 @@ services:
       dockerfile: Dockerfile
     environment:
       - NODE_ENV=${NODE_ENV:-development}
-      - HOST=127.0.0.1
+      # IN_CONTAINER=true tells the app it is running inside Docker and may
+      # bind to 0.0.0.0 so that Nginx (in a sibling container on the same
+      # bridge network) can reach it via the service name "app".
+      # The app port is NOT published to the host — only exposed within the
+      # Docker bridge — so 0.0.0.0 here is safe (see app/src/config/index.js).
+      - IN_CONTAINER=true
       - PORT=3075
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - APP_NAME=${APP_NAME:-Scenario75 Cyber Range}
-    # The app service does NOT publish ports to the host.
-    # All external traffic is routed through Nginx.
+    # expose makes the port reachable only by other containers on the same
+    # Docker network.  It does NOT publish the port to the host.
     expose:
       - "3075"
     networks:
@@ -29,7 +34,8 @@ services:
     build:
       context: ./nginx
       dockerfile: Dockerfile
-    # Bind ONLY to localhost — do NOT use 0.0.0.0
+    # Only Nginx is published — bound to the host loopback only.
+    # No other port is reachable from outside the host.
     ports:
       - "127.0.0.1:3075:80"
     depends_on:
@@ -42,5 +48,7 @@ services:
 networks:
   cyberrange:
     driver: bridge
-    # Internal network — no external connectivity for containers
+    # internal: false allows the containers to make outbound calls if needed
+    # (e.g. for package installs during build).  The host-side exposure is
+    # controlled exclusively by the `ports` / `expose` configuration above.
     internal: false

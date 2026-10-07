@@ -8,45 +8,13 @@
     body { font-family: system-ui, sans-serif; max-width: 800px; margin: 40px auto; padding: 0 20px; background: #f5f5f5; }
     h1 { color: #1a1a2e; }
     .panel { background: #fff; padding: 24px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,.1); margin-bottom: 20px; }
-    .placeholder { border: 2px dashed #ccc; padding: 16px; border-radius: 4px; color: #888; font-style: italic; }
   </style>
 </head>
 <body>
-  <h1>Admin Dashboard</h1>
-
+  <h1>401 — Unauthorized</h1>
   <div class="panel">
-    <h2>System Status</h2>
-    <p>Service: <strong>Scenario75 Cyber Range</strong></p>
-    <p>Status: <strong>Operational (Scaffolding Stage)</strong></p>
-  </div>
-
-  <div class="panel">
-    <h2>Administrative Information</h2>
-    <p>This dashboard is restricted to authenticated administrators.</p>
-    <p>Feedback submissions are reviewed here.</p>
-    <!-- Placeholder: authentication gate will be implemented in CTF stage -->
-    <p class="placeholder">[TODO] Session validation will be enforced here in the CTF implementation stage.</p>
-  </div>
-
-  <div class="panel">
-    <h2>Assessment Flag</h2>
-    <!-- CTF FLAG PLACEHOLDER: {flag} -->
-    <p class="placeholder">[CTF FLAG PLACEHOLDER] The assessment flag will be displayed here upon successful exploitation in the isolated cyber range.</p>
-  </div>
-
-  <div class="panel">
-    <h2>Feedback Output</h2>
-    <!-- XSS PAYLOAD CONTAINER PLACEHOLDER (TODO: CTF implementation) -->
-    <div id="xss-container" class="placeholder">
-      [XSS PAYLOAD CONTAINER PLACEHOLDER]
-      <!--
-        TODO (CTF IMPLEMENTATION STAGE — isolated cyber-range only):
-        This container will render submitted feedback content for the
-        controlled XSS demonstration. It MUST NOT be implemented until
-        the application is deployed inside an isolated VM with no
-        external connectivity.
-      -->
-    </div>
+    <p>You must be authenticated to access the admin dashboard.</p>
+    <p>This file is a static fallback only and contains no sensitive information.</p>
   </div>
 </body>
 </html>
