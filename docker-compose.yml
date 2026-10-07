@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    environment:
+      - NODE_ENV=${NODE_ENV:-development}
+      - HOST=127.0.0.1
+      - PORT=3075
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - APP_NAME=${APP_NAME:-Scenario75 Cyber Range}
+    # The app service does NOT publish ports to the host.
+    # All external traffic is routed through Nginx.
+    expose:
+      - "3075"
+    networks:
+      - cyberrange
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3075/health', r => process.exit(r.statusCode === 200 ? 0 : 1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  nginx:
+    build:
+      context: ./nginx
+      dockerfile: Dockerfile
+    # Bind ONLY to localhost — do NOT use 0.0.0.0
+    ports:
+      - "127.0.0.1:3075:80"
+    depends_on:
+      app:
+        condition: service_healthy
+    networks:
+      - cyberrange
+    restart: unless-stopped
+
+networks:
+  cyberrange:
+    driver: bridge
+    # Internal network — no external connectivity for containers
+    internal: false
