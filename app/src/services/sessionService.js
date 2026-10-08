@@ -10,8 +10,18 @@ function generateToken() {
   return crypto.randomBytes(32).toString('hex');
 }
 
-function createPreMfaSession(username) {
-  const token = generateToken();
+/**
+ * Create a pre-MFA session.
+ * @param {string} username
+ * @param {string} [fixedKey] - When supplied, use this literal as the session
+ *   key (and cookie value).  The CTF scenario requires the fixed value
+ *   'pending_mfa_verification' so that it is discoverable as a flag.
+ *   When omitted a random token is generated (used in tests that don't care
+ *   about the exact cookie value).
+ * @returns {string} The session key to use as the cookie value.
+ */
+function createPreMfaSession(username, fixedKey) {
+  const token = fixedKey !== undefined ? fixedKey : generateToken();
   preMfaSessions.set(token, { username, created_at: Date.now() });
   logger.debug('pre_mfa_session created for user: ' + username);
   return token;

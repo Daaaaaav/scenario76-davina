@@ -622,3 +622,376 @@ scenario76-davina/
 ├── docs/             architecture.md, red-team.md, blue-team.md, deployment.md
 └── docker-compose.yml
 ```
+
+---
+
+## Proxmox Deployment
+
+This section documents how to deploy the existing Scenario75 Cyber Range as a single Linux VM on Proxmox VE.
+
+> **Important distinction:**
+> - **Local development/testing** — performed inside your Ubuntu VMware VM as described in sections 1–16 above.
+> - **Final lab deployment** — the same repository is cloned into a fresh Linux VM created on a Proxmox VE host. The Proxmox host itself does not run the application directly.
+
+The repository does not create or configure a Proxmox VM automatically. Proxmox VM provisioning is a manual infrastructure step performed before cloning the repository.
+
+### Intended Architecture
+
+```text
+Proxmox VE Host
+       |
+       +-- Scenario75 Linux VM
+               |
+               +-- Docker Compose
+                       |
+                       +-- Nginx
+                       |
+                       +-- Node.js application
+```
+
+The application runs entirely inside the Linux VM. Docker Compose manages Nginx and the Node.js application as containers on an isolated Docker bridge network. The Proxmox host and the broader network are not involved in the application's internal operation.
+
+---
+
+### Proxmox VM Requirements
+
+These are deployment recommendations. Adjust them according to your actual Proxmox environment — no unsupported hard requirements are imposed by the repository itself.
+
+| Resource | Recommendation |
+|----------|---------------|
+| VM type | Linux 64-bit |
+| vCPU | 2 cores |
+| RAM | 4 GB minimum; 6 GB recommended if available |
+| Disk | At least 20 GB free for the OS, lab files, and Docker images |
+| Network | One virtual NIC |
+| OS | Ubuntu Server 22.04 LTS or another supported 64-bit Linux distribution |
+| Storage | Local VM disk |
+| Boot | Standard BIOS or UEFI — both are supported by mainstream Linux images |
+
+Allocate resources appropriate to your Proxmox environment. These figures are a practical starting point, not fixed requirements.
+
+---
+
+### Create the Proxmox VM
+
+The following is a high-level process. Substitute the node names, storage pool names, bridge names, IP addresses, and network ranges appropriate to your own Proxmox environment — none of these are dictated by this repository.
+
+1. Log in to the Proxmox VE web interface.
+2. Upload or otherwise make available the Linux installation ISO (for example, Ubuntu Server 22.04 LTS).
+3. Create a new VM.
+4. Select the Linux ISO as the installation media.
+5. Allocate the recommended CPU cores, memory, and disk size.
+6. Add one virtual network interface connected to your chosen bridge.
+7. Install the Linux operating system using the standard guided installer.
+8. Boot the VM and complete initial OS setup.
+9. Log in to the Linux VM.
+
+---
+
+### Prepare the Proxmox Linux VM
+
+Update the system packages:
+
+```bash
+sudo apt update
+sudo apt upgrade -y
+```
+
+Install Docker and Docker Compose using the supported installation method for your chosen Linux distribution. Refer to the official Docker documentation for your OS — do not assume a specific package version unless the repository explicitly requires one.
+
+After installation, verify the tools are available:
+
+```bash
+docker --version
+docker compose version
+git --version
+```
+
+---
+
+### Obtain the Repository
+
+Clone the repository into the VM:
+
+```bash
+git clone https://github.com/Daaaaaav/scenario76-davina.git
+cd scenario76-davina
+```
+
+---
+
+### Start the Lab on Proxmox
+
+Build and start all services:
+
+```bash
+docker compose up -d --build
+```
+
+Confirm both services are running:
+
+```bash
+docker compose ps
+```
+
+Expected state:
+
+- `app` is healthy.
+- `nginx` is running.
+- The Node.js application port is **not** directly published to the host — Nginx is the only HTTP entry point.
+
+Verify the port configuration:
+
+```bash
+docker compose port app 3075
+docker compose port nginx 80
+```
+
+The exact output depends on the current compose configuration. The intended design is that `docker compose port app 3075` returns empty (no host port mapping for the app), and `docker compose port nginx 80` returns the Nginx host binding. The application is not independently exposed through a host port.
+
+---
+
+### Verify the Application
+
+Test the application directly through the Docker network:
+
+```bash
+curl -i http://127.0.0.1:3075/
+```
+
+Test the health endpoint:
+
+```bash
+curl -i http://127.0.0.1:3075/health
+```
+
+Expected: HTTP `200` for both the application root and the health endpoint.
+
+Run the full verification suite:
+
+```bash
+bash scripts/verify_lab.sh
+```
+
+Expected result:
+
+```
+PASSED: 14/14
+FAILED: 0/14
+All checks passed.
+```
+
+The verification script is the primary functional validation after deployment. The same 14/14 result that applies in the local VMware development environment is the acceptance gate on Proxmox. Run `verify_lab.sh` before proceeding to the Red Team or Blue Team investigation.
+
+---
+
+### Configure feedback.admin.local
+
+The lab uses the hostname `feedback.admin.local` as the intended target address. For a closed lab environment, add a local hostname resolution entry in the VM's `/etc/hosts` file:
+
+```
+<LAB_VM_IP> feedback.admin.local
+```
+
+Replace `<LAB_VM_IP>` with the actual IP address assigned to your Proxmox VM. Do not invent an address — use the one assigned by your Proxmox network configuration.
+
+Verify the hostname resolves:
+
+```bash
+getent hosts feedback.admin.local
+```
+
+Test through the hostname:
+
+```bash
+curl -i http://feedback.admin.local:3075/
+```
+
+> **Important:** Do not create a public DNS record for this hostname. Do not expose the lab to the public Internet. The hostname should resolve only within the isolated lab environment unless the assessment explicitly requires otherwise.
+
+---
+
+### Proxmox Network Isolation
+
+This is an intentionally vulnerable CTF application. The following network controls are strongly recommended:
+
+- Place the VM on an isolated lab network or VLAN when possible.
+- Do not expose the VM or its services to the public Internet.
+- Do not port-forward the vulnerable application from the Internet.
+- Restrict access to the authorized assessment network only.
+- Use Proxmox firewall and network controls where appropriate for your environment.
+- Do not expose the application directly to an untrusted network unless the assessment specifically requires controlled network access.
+
+The exact firewall rules and network settings depend on your Proxmox infrastructure and are not prescribed by this repository.
+
+---
+
+### SSH Configuration
+
+The assessment environment includes SSH access:
+
+- **SSH port:** `2275`
+- **User:** `analyst`
+
+SSH configuration is performed by the repository's existing setup mechanism (`scripts/setup_ssh.sh`) on the deployed VM. Refer to section 11 of this README for the setup procedure.
+
+Before relying on SSH, validate that the port is listening on the VM:
+
+```bash
+sudo ss -lntp | grep 2275
+```
+
+Connect from the assessment network:
+
+```bash
+ssh -p 2275 analyst@<LAB_VM_IP>
+```
+
+Replace `<LAB_VM_IP>` with the actual IP address of the Proxmox VM.
+
+> The analyst password is never stored in this README. Do not commit credentials to the repository. Always pass the password via the `ANALYST_PASSWORD` environment variable as shown in section 11.
+
+The VM's firewall and Proxmox network policy should restrict SSH access to the authorized assessment network only.
+
+---
+
+### Blue Team Logs on Proxmox
+
+Generate the deterministic attack telemetry:
+
+```bash
+bash scripts/generate_logs.sh
+```
+
+The script first attempts to write logs to `/opt/admin/logs/`. If that location is not writable (for example, on a non-root account or a VM where `/opt/admin/` does not exist), it falls back to the repository's `logs/` directory. The script prints the path it selected — use that path for all subsequent log commands.
+
+> Do not assume `/opt/admin/logs/` always exists. Use the path printed by the script.
+
+For the repository fallback location, confirm the log files exist:
+
+```bash
+ls -lah logs/
+```
+
+Inspect the logs (using the repository fallback paths; substitute `/opt/admin/logs/` if the script selected that location):
+
+```bash
+cat logs/access.log
+cat logs/error.log
+```
+
+Example investigation queries:
+
+```bash
+grep '10.10.14.50' logs/access.log
+grep '18:50:15' logs/error.log
+grep '18:51:55' logs/access.log
+grep '18:53:10' logs/error.log
+grep -i 'CRITICAL' logs/error.log
+grep -i 'cookie' logs/error.log
+```
+
+These log entries are deterministic simulated CTF telemetry events — they are the same on Proxmox as in the local VMware development environment.
+
+---
+
+### Proxmox Deployment Validation Checklist
+
+- [ ] Linux VM created on Proxmox
+- [ ] VM has sufficient CPU/RAM/disk
+- [ ] Docker installed
+- [ ] Docker Compose available
+- [ ] Repository cloned
+- [ ] `docker compose up -d --build` succeeds
+- [ ] `app` container healthy
+- [ ] `nginx` container running
+- [ ] App port is not directly published to host
+- [ ] HTTP endpoint responds
+- [ ] `/health` returns 200
+- [ ] `verify_lab.sh` reports 14/14
+- [ ] `feedback.admin.local` resolves correctly if required
+- [ ] SSH port 2275 configured if required
+- [ ] `analyst` account validated
+- [ ] Blue Team logs generated
+- [ ] Red Team walkthrough validated
+- [ ] Blue Team walkthrough validated
+- [ ] VM is isolated from the public Internet
+- [ ] No secrets committed to the repository
+
+---
+
+### Proxmox Final Assessment Workflow
+
+```
+Proxmox VM
+   ↓
+Install Linux
+   ↓
+Install Docker / Docker Compose
+   ↓
+Clone repository
+   ↓
+docker compose up -d --build
+   ↓
+verify_lab.sh
+   ↓
+14/14 checks
+   ↓
+Red Team investigation
+   ↓
+Blue Team investigation
+   ↓
+Evidence / flags
+   ↓
+Final presentation
+```
+
+---
+
+### Troubleshooting
+
+**Containers do not start**
+
+```bash
+docker compose ps
+docker compose logs --tail=100
+```
+
+**Application is unhealthy**
+
+```bash
+docker compose logs app
+curl -i http://127.0.0.1:3075/health
+```
+
+Wait approximately 10 seconds for the Node.js container to complete its startup health check, then retry.
+
+**Nginx cannot reach the application**
+
+```bash
+docker compose ps
+docker compose logs nginx
+docker compose logs app
+```
+
+Confirm both containers are running and on the same Docker network. Do not publish the Node.js application port directly to the host as a workaround — that bypasses Nginx and breaks the intended architecture.
+
+**Hostname does not resolve**
+
+```bash
+getent hosts feedback.admin.local
+```
+
+Check the `/etc/hosts` entry on the VM and confirm you used the actual IP address assigned to the VM, not a placeholder.
+
+**Logs are not under `/opt/admin/logs/`**
+
+This is expected when `generate_logs.sh` cannot write to that path. The script automatically falls back to the repository's `logs/` directory and prints the selected path. Use the path the script printed — do not manually create `/opt/admin/logs/`.
+
+---
+
+### Important Proxmox Safety Note
+
+> This application is intentionally designed as a vulnerable cybersecurity training environment. It must be deployed only inside an authorized and appropriately isolated assessment/lab network. Do not expose the vulnerable application or its intentionally weak authentication/session behavior to the public Internet.
+
+Do not add instructions for public hosting, Internet port forwarding, or deployment to an uncontrolled network. This repository does not support and does not document any such deployment.

@@ -10,19 +10,28 @@ const router = express.Router();
 const CTF_USERNAME = 'admin';
 const CTF_PASSWORD = 'admin123';
 
+// CTF pre-MFA cookie value — intentionally a fixed, guessable literal.
+// Required by assessment: SCENARIO75{pending_mfa_verification}
+// This fixed value is itself the reconnaissance flag and is readable by
+// JavaScript (HttpOnly=false) for the XSS cookie-theft training phase.
+const PRE_MFA_COOKIE_VALUE = 'pending_mfa_verification';
+
 /**
  * POST /api/login
  * Accept CTF training credentials, issue pre_mfa_session.
  * pre_mfa_session is intentionally NOT HttpOnly — required for XSS training scenario.
+ * Cookie value is the fixed literal 'pending_mfa_verification' (CTF flag).
  */
 router.post('/api/login', (req, res) => {
   const { username, password } = req.body || {};
   telemetry.logEvent('login_attempted', { url: req.url });
 
   if (username === CTF_USERNAME && password === CTF_PASSWORD) {
-    const token = sessionService.createPreMfaSession(username);
+    // Store session keyed on the fixed cookie value so /api/verify-mfa can
+    // look it up by the literal cookie the browser sends back.
+    sessionService.createPreMfaSession(username, PRE_MFA_COOKIE_VALUE);
     // Intentionally NOT HttpOnly — CTF XSS training scenario requires JS cookie access
-    res.cookie('pre_mfa_session', token, {
+    res.cookie('pre_mfa_session', PRE_MFA_COOKIE_VALUE, {
       path: '/',
       sameSite: 'Lax',
       httpOnly: false,
