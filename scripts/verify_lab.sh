@@ -111,7 +111,7 @@ else
 fi
 
 # CHECK 9: POST /api/feedback with SVG payload -> 200 (WAF bypass allowed)
-WAF_BYPASS_STATUS=$(curl -sf -o /dev/null \
+WAF_BYPASS_STATUS=$(curl -s -o /dev/null \
   -w '%{http_code}' \
   -X POST "${BASE_URL}/api/feedback" \
   -H 'Content-Type: application/json' \
@@ -122,16 +122,13 @@ else
   check_fail "CHECK 9: SVG WAF bypass should return 200 (got ${WAF_BYPASS_STATUS})"
 fi
 
-# CHECK 10: App port not directly published on host.
-# `docker compose port` exits 0 and prints "HOST:PORT" when published,
-# or exits non-zero (or prints nothing) when the port is only exposed
-# internally via `expose:` (no `ports:` mapping).
-# We capture stdout; a non-empty result means the port IS published.
-published=$(docker compose port app 3075 2>/dev/null || true)
-if [ -z "$published" ]; then
-  check_pass "CHECK 10: App port is not directly published to host"
+# CHECK 10: App port not directly published on host
+APP_PORT_CHECK=$(docker compose port app 3075 2>/dev/null || true)
+
+if [[ -z "$APP_PORT_CHECK" || "$APP_PORT_CHECK" == ":0" ]]; then
+  check_pass "CHECK 10: App port not directly published to host"
 else
-  check_fail "CHECK 10: App port appears to be directly published: ${published}"
+  check_fail "CHECK 10: App port appears to be directly published: ${APP_PORT_CHECK}"
 fi
 
 # CHECK 11: No service uses host networking
